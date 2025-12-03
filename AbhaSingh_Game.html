@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Core Guardian</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #0a0a12; 
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none;
+        }
+
+        #gameCanvas {
+            display: block;
+        }
+
+        /* UI */
+        #uiLayer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; 
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+
+        .screen {
+            background: rgba(0, 0, 0, 0.85);
+            padding: 40px;
+            border-radius: 15px;
+            border: 2px solid #00ffff;
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.2);
+            pointer-events: auto; /* Re-enable clicks for buttons */
+            transition: opacity 0.3s;
+        }
+
+        h1 {
+            font-size: 48px;
+            margin: 0 0 10px 0;
+            color: #00ffff;
+            text-transform: uppercase;
+            letter-spacing: 5px;
+            text-shadow: 0 0 10px #00ffff;
+        }
+
+        p {
+            font-size: 18px;
+            color: #ccc;
+            line-height: 1.6;
+        }
+
+        .btn {
+            background: linear-gradient(45deg, #00ffff, #0088ff);
+            border: none;
+            padding: 15px 40px;
+            color: #000;
+            font-size: 24px;
+            font-weight: bold;
+            border-radius: 50px;
+            cursor: pointer;
+            margin-top: 20px;
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+
+        .btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 30px rgba(0, 255, 255, 0.6);
+        }
+
+        .btn:active {
+            transform: scale(0.95);
+        }
+
+        #scoreBoard {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            font-size: 24px;
+            font-weight: bold;
+            color: #fff;
+            pointer-events: none;
+            display: none; /* Hidden on start screen */
+        }
+
+        /* Hidden helper classes */
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- UI LAYER -->
+    <div id="uiLayer">
+        <!-- Start Screen -->
+        <div id="startScreen" class="screen">
+            <h1>Core Guardian</h1>
+            <p>Protect the central core from incoming particles.</p>
+            <p>Use <strong>Left/Right Arrow Keys</strong> or <strong>Touch Sides</strong> to rotate shield.</p>
+            <button class="btn" onclick="startGame()">START MISSION</button>
+        </div>
+
+        <!-- Game Over Screen -->
+        <div id="gameOverScreen" class="screen hidden">
+            <h1 style="color: #ff3333; text-shadow: 0 0 10px #ff3333;">Game Over</h1>
+            <p>The core has been breached.</p>
+            <p>Final Score: <span id="finalScore">0</span></p>
+            <button class="btn" style="background: linear-gradient(45deg, #ff3333, #ff8800);" onclick="resetGame()">RETRY</button>
+        </div>
+    </div>
+
+    <!-- HUD Score -->
+    <div id="scoreBoard">Score: <span id="scoreVal">0</span></div>
+
+    <!-- GAME CANVAS -->
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        // --- GAME CONSTANTS & SETUP ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Game State Variables
+        let isPlaying = false;
+        let score = 0;
+        let animationId;
+        
+        // Dimensions
+        let centerX, centerY;
+        
+        // Game Objects
+        const core = {
+            radius: 25,
+            color: '#00ffff',
+            pulse: 0,
+            pulseDir: 0.5
+        };
+
+        const shield = {
+            angle: 0, // In radians
+            distance: 80, // Distance from center
+            arcLength: Math.PI / 2, // 90 degrees wide
+            width: 10,
+            color: '#0088ff',
+            rotationSpeed: 0.1
+        };
+
+        let enemies = [];
+        let particles = []; // Explosion particles
+
+        // Input State
+        const keys = {
+            ArrowLeft: false,
+            ArrowRight: false
+        };
+
+        // --- RESIZE HANDLING ---
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            centerX = canvas.width / 2;
+            centerY = canvas.height / 2;
+        }
+        window.addEventListener('resize', resize);
+        resize(); // Initial call
+
+        // --- INPUT HANDLING ---
+        window.addEventListener('keydown', (e) => {
+            if(keys.hasOwnProperty(e.code)) keys[e.code] = true;
+
+            // Enter key to Start/Retry
+            if (e.code === 'Enter') {
+                const startScreen = document.getElementById('startScreen');
+                const gameOverScreen = document.getElementById('gameOverScreen');
+                
+                if (!startScreen.classList.contains('hidden')) {
+                    startGame();
+                } else if (!gameOverScreen.classList.contains('hidden')) {
+                    resetGame();
+                }
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if(keys.hasOwnProperty(e.code)) keys[e.code] = false;
+        });
+
+        // Touch controls for mobile
+        window.addEventListener('touchstart', (e) => {
+            if(!isPlaying) return;
+            const touchX = e.touches[0].clientX;
+            if(touchX < window.innerWidth / 2) keys.ArrowLeft = true;
+            else keys.ArrowRight = true;
+        });
+
+        window.addEventListener('touchend', () => {
+            keys.ArrowLeft = false;
+            keys.ArrowRight = false;
+        });
+
+
+        // --- GAME LOGIC FUNCTIONS ---
+
+        function spawnEnemy() {
+            // Spawn at random angle outside screen
+            const angle = Math.random() * Math.PI * 2;
+            const spawnDistance = Math.sqrt(Math.pow(canvas.width/2, 2) + Math.pow(canvas.height/2, 2)) + 50;
+            
+            // Speed increases slightly with score
+            const speed = 2 + (score / 50); 
+
+            enemies.push({
+                x: centerX + Math.cos(angle) * spawnDistance,
+                y: centerY + Math.sin(angle) * spawnDistance,
+                angle: angle, // Direction they are coming FROM
+                speed: speed,
+                radius: 8,
+                distance: spawnDistance
+            });
+        }
+
+        function createExplosion(x, y, color) {
+            for(let i=0; i<10; i++) {
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 5,
+                    vy: (Math.random() - 0.5) * 5,
+                    life: 1.0,
+                    color: color
+                });
+            }
+        }
+
+        function update() {
+            if(!isPlaying) return;
+
+            // 1. Update Shield Position
+            if(keys.ArrowLeft) shield.angle -= shield.rotationSpeed;
+            if(keys.ArrowRight) shield.angle += shield.rotationSpeed;
+
+            // Normalize angle to 0 - 2PI
+            if(shield.angle < 0) shield.angle += Math.PI * 2;
+            if(shield.angle > Math.PI * 2) shield.angle -= Math.PI * 2;
+
+            // 2. Spawn Enemies
+            // Spawn chance increases slightly with score
+            if(Math.random() < 0.012 + (score * 0.0002)) {
+                spawnEnemy();
+            }
+
+            // 3. Update Enemies
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                let e = enemies[i];
+                
+                // Move towards center
+                e.distance -= e.speed;
+                e.x = centerX + Math.cos(e.angle) * e.distance;
+                e.y = centerY + Math.sin(e.angle) * e.distance;
+
+                // --- COLLISION DETECTION ---
+
+                // Check Shield Collision
+                // Shield radius check
+                if (Math.abs(e.distance - shield.distance) < shield.width + e.radius) {
+                    // Angle check
+                    // Normalize enemy angle to 0 - 2PI
+                    let normEnemyAngle = e.angle % (Math.PI * 2);
+                    if(normEnemyAngle < 0) normEnemyAngle += Math.PI * 2;
+                    
+                    // Check if enemy angle is within shield arc
+                    // Handle wrap-around logic for angles
+                    let diff = Math.abs(normEnemyAngle - shield.angle);
+                    if (diff > Math.PI) diff = (Math.PI * 2) - diff;
+
+                    if (diff < shield.arcLength / 2) {
+                        // HIT SHIELD!
+                        score += 10;
+                        document.getElementById('scoreVal').innerText = score;
+                        createExplosion(e.x, e.y, '#0088ff');
+                        enemies.splice(i, 1);
+                        continue;
+                    }
+                }
+
+                // Check Core Collision
+                if (e.distance < core.radius + e.radius) {
+                    gameOver();
+                    return; // Stop update
+                }
+            }
+
+            // 4. Update Particles
+            for(let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life -= 0.05;
+                if(p.life <= 0) particles.splice(i, 1);
+            }
+
+            // 5. Core Animation (Pulse)
+            core.pulse += core.pulseDir;
+            if(core.pulse > 5 || core.pulse < 0) core.pulseDir *= -1;
+        }
+
+        function draw() {
+            // Clear Screen
+            ctx.fillStyle = 'rgba(10, 10, 18, 0.4)'; // Trail effect
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Core
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, core.radius + core.pulse, 0, Math.PI * 2);
+            ctx.fillStyle = core.color;
+            ctx.shadowBlur = 20;
+            ctx.shadowColor = core.color;
+            ctx.fill();
+            ctx.closePath();
+
+            // Draw Shield
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = shield.color;
+            ctx.lineWidth = shield.width;
+            ctx.strokeStyle = shield.color;
+            ctx.lineCap = 'round';
+            
+            ctx.beginPath();
+            // Arc arguments: x, y, radius, startAngle, endAngle
+            ctx.arc(centerX, centerY, shield.distance, shield.angle - shield.arcLength/2, shield.angle + shield.arcLength/2);
+            ctx.stroke();
+
+            // Draw Enemies
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#ff3333';
+            ctx.fillStyle = '#ff3333';
+            
+            enemies.forEach(e => {
+                ctx.beginPath();
+                ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Draw Particles
+            particles.forEach(p => {
+                ctx.globalAlpha = p.life;
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1.0;
+            });
+            
+            // Reset Shadow for next frame efficiency
+            ctx.shadowBlur = 0;
+        }
+
+        function gameLoop() {
+            if(isPlaying) {
+                update();
+                draw();
+                animationId = requestAnimationFrame(gameLoop);
+            }
+        }
+
+        // --- STATE MANAGEMENT ---
+
+        function startGame() {
+            document.getElementById('startScreen').classList.add('hidden');
+            document.getElementById('gameOverScreen').classList.add('hidden');
+            document.getElementById('scoreBoard').style.display = 'block';
+            
+            // Reset Variables
+            score = 0;
+            document.getElementById('scoreVal').innerText = '0';
+            enemies = [];
+            particles = [];
+            shield.angle = 0;
+            
+            isPlaying = true;
+            spawnEnemy(); // <--- Immediate spawn on start
+            gameLoop();
+        }
+
+        function gameOver() {
+            isPlaying = false;
+            cancelAnimationFrame(animationId);
+            document.getElementById('gameOverScreen').classList.remove('hidden');
+            document.getElementById('finalScore').innerText = score;
+        }
+
+        function resetGame() {
+            startGame();
+        }
+        ctx.fillStyle = '#0a0a12';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    </script>
+</body>
+</html>
